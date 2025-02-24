@@ -53,7 +53,7 @@ summary.eff <- function(object, type=c("response", "link"), ...){
 
 print.summary.eff <- function(x, ...){
   cat(x$header)
-  if (x$offset != 0) cat("\noffset = ", x$offset, "\n\n")
+  if (x$offset != 0 && x$offset != 0) cat("\noffset = ", x$offset, "\n\n")
   print(x$effect, ...)
   if (!is.null(x$lower)){
     cat(x$lower.header)
