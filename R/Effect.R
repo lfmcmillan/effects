@@ -702,6 +702,154 @@ Effect.polr <- function(focal.predictors, mod,
   result
 }
 
+Effect.osm <- function(focal.predictors, mod,
+                        xlevels=list(), fixed.predictors,
+                        vcov.=vcov, se=TRUE, ...,
+                        #legacy arguments:
+                        confint, confidence.level, given.values, typical){
+    ellipses.list <- list(...)
+    if ("latent" %in% names(ellipses.list)) warning("The 'latent' option is not available for OSM effects because latent effects in OSM are not required to be the same for all response levels, so there are multiple latent effects.")
+
+    if (is.numeric(xlevels)){
+        if (length(xlevels) > 1 || round(xlevels != xlevels)) stop("xlevels must be a single whole number or a list")
+        form <- Effect.default(NULL, mod) #returns the fixed-effects formula
+        terms <- attr(terms(form), "term.labels")
+        predictors <- all.vars(parse(text=terms))
+        xlevs <- list()
+        for (pred in predictors){
+            xlevs[[pred]] <- xlevels
+        }
+        xlevels <- xlevs
+    }
+
+    if (missing(fixed.predictors)) fixed.predictors <- NULL
+    fixed.predictors <- applyDefaults(fixed.predictors,
+                                      list(given.values=NULL, typical=mean),
+                                      arg="fixed.predictors")
+    if (missing(given.values)) given.values <- fixed.predictors$given.values
+    # new 1/22/18 to allow for automatical equal weighting of factor levels
+    # new 1/22/18 to allow for automatical equal weighting of factor levels
+    if(!is.null(given.values)){
+        if (given.values[1] == "default") given.values <- NULL
+        if (given.values[1] == "equal") given.values <- .set.given.equal(mod)}
+    # end new code
+    if (missing(typical)) typical <- fixed.predictors$typical
+    if (!missing(confint)) se <- confint
+    confint <- applyDefaults(se, list(compute=TRUE, level=.95, type="pointwise"),
+                             onFALSE=list(compute=FALSE, level=.95, type="pointwise"),
+                             arg="se")
+    se <- confint$compute
+    if (missing(confidence.level)) confidence.level <- confint$level
+    confidence.type <- match.arg(confint$type, c("pointwise", "Scheffe", "scheffe"))
+    default.levels <- NULL # just for backwards compatibility
+    if (missing(given.values)) given.values <- NULL
+    else if (!all(which <- names(given.values) %in% names(coef(mod))))
+        stop("given.values (", names(given.values[!which]),") not in the model")
+    formula.rhs <- formula(mod)[c(1, 3)]
+    model.components <- Analyze.model(focal.predictors, mod, xlevels, default.levels, formula.rhs, typical=typical)
+    excluded.predictors <- model.components$excluded.predictors
+    predict.data <- model.components$predict.data
+    factor.levels <- model.components$factor.levels
+    factor.cols <- model.components$factor.cols
+    #    n.focal <- model.components$n.focal
+    x <- model.components$x
+    X.mod <- model.components$X.mod
+    cnames <- model.components$cnames
+    X <- model.components$X
+    Terms <- delete.response(terms(mod))
+    mf <- model.frame(Terms, predict.data, xlev = factor.levels, na.action=NULL)
+    mod.matrix <- model.matrix(formula.rhs, data = mf, contrasts.arg = mod$contrasts)
+    X0 <- Fixup.model.matrix(mod, mod.matrix, model.matrix(mod),
+                             X.mod, factor.cols, cnames, focal.predictors, excluded.predictors, typical, given.values)
+    resp.names <- make.names(mod$lev, unique=TRUE)
+    X0 <- X0[,-1, drop=FALSE]
+    b <- coef(mod)
+    p <- length(b)  # corresponds to p - 1 in the text
+    zeta <- mod$mu  # intercepts are thresholds
+    phi <- mod$phi
+    z <- if (confidence.type == "pointwise") {
+        qnorm(1 - (1 - confidence.level)/2)
+    } else {
+        scheffe(confidence.level, p + length(zeta)-1 + length(phi)-2)
+    }
+    result <- list(term=paste(focal.predictors, collapse="*"), formula=formula(mod), response=response.name(mod),
+                   y.levels=mod$lev, variables=x,
+                   x=predict.data[, focal.predictors, drop=FALSE],
+                   model.matrix=X0, data=X, discrepancy=0, model="polr")
+    # if (latent){
+    #     V <- if(inherits(vcov., "matrix")) vcov.[1:p, 1:p] else {
+    #         if(inherits(vcov., "function")) vcov.(mod)[1:p, 1:p]
+    #         else stop("vcov. must be a function or matrix")}
+    #     res <- eff.latent(X0, b, V, se)
+    #     result$fit <- res$fit
+    #     if (se){
+    #         result$se <- res$se
+    #         result$lower <- result$fit - z*result$se
+    #         result$upper <- result$fit + z*result$se
+    #         result$confidence.level <- confidence.level
+    #     }
+    #     transformation <- list()
+    #     transformation$link <- I
+    #     transformation$inverse <- I
+    #     result$transformation <- transformation
+    #     result$mu <- mod$mu
+    #     result$phi <- mod$phi
+    #     class(result) <- c("efflatent", "eff", "effosm")
+    #     return(result)
+    # }
+
+    ## Count the number of parameters and also the number of mu and phi
+    ## parameters specifically. Also reorder the vcov matrix to match the
+    ## ordering used in eff.osm. eff.osm inherits the ordering from eff.polr
+    ## which has mu (zeta) first, followed by the covariate coefficients. So
+    ## eff.osm uses mu first, then phi, then the covariate coefficients, but
+    ## osm() in clustord outputs vcov with the covariate coefficients first,
+    ## then mu, then phi
+    m <- length(zeta)
+    r <- 2*m - 3 + p
+    indices <- c((p+1):r, 1:p)
+    V <- if(inherits(vcov., "matrix")) vcov.[indices, indices] else {
+        if(inherits(vcov., "function")) vcov.(mod)[indices, indices]
+        else stop("vcov. must be a function or matrix")}
+    # Don't need to change the sign of the covariances for the mu intercepts
+
+    n <- nrow(X0)
+    P <- Logit <- matrix(0, n, m)
+    colnames(P) <-  paste("prob.", resp.names, sep="")
+    colnames(Logit) <-  paste("logit.", resp.names, sep="")
+    if (se){
+        Lower.logit <- Upper.logit <- Lower.P <- Upper.P <- SE.P <- SE.Logit <- matrix(0, n, m)
+        colnames(Lower.logit) <-  paste("L.logit.", resp.names, sep="")
+        colnames(Upper.logit) <-  paste("U.logit.", resp.names, sep="")
+        colnames(Lower.P) <-  paste("L.prob.", resp.names, sep="")
+        colnames(Upper.P) <-  paste("U.prob.", resp.names, sep="")
+        colnames(SE.P) <-  paste("se.prob.", resp.names, sep="")
+        colnames(SE.Logit) <-  paste("se.logit.", resp.names, sep="")
+    }
+    for (i in 1:n){
+        res <- eff.osm(X0[i,], b, zeta, phi, V, m, r, se) # compute effects
+        P[i,] <- res$p # fitted probabilities
+        Logit[i,] <- logit <- res$logits # fitted logits
+        if (se){
+            SE.P[i,] <- res$std.err.p # std. errors of fitted probs
+            SE.Logit[i,] <- se.logit <- res$std.error.logits # std. errors of logits
+            Lower.P[i,] <- logit2p(logit - z*se.logit)
+            Upper.P[i,] <- logit2p(logit + z*se.logit)
+            Lower.logit[i,] <- logit - z*se.logit
+            Upper.logit[i,] <- logit + z*se.logit
+        }
+    }
+    result$prob <- P
+    result$logit <- Logit
+    if (se) result <- c(result,
+                        list(se.prob=SE.P, se.logit=SE.Logit,
+                             lower.logit=Lower.logit, upper.logit=Upper.logit,
+                             lower.prob=Lower.P, upper.prob=Upper.P,
+                             confidence.level=confidence.level))
+    class(result) <- 'effpoly'
+    result
+}
+
 # merMod -- included here to allow addtional KR argument
 Effect.merMod <- function(focal.predictors, mod, ..., KR=FALSE){
   if (KR && !requireNamespace("pbkrtest", quietly=TRUE)){

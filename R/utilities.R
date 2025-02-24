@@ -530,6 +530,77 @@ eff.latent <- function(X0, b, V, se){
   list(fit=eta, se=sqrt(var))
 }
 
+# the following is used by  Effect.osm()
+eff.osm <- function(x0, b, zeta, phi, V, m, r, se){
+    ## m is the number of response levels
+    ## eta0 is the covariate component of the model
+    eta0 <- as.vector(x0 %*% b)
+
+    E_j <- c(1, exp(zeta[-1] + phi[-1]*eta0))
+    S <- sum(E_j)
+    S2 <- S^2
+    phiE_j <- phi[-1]*E_j[-1]
+
+    theta_j <- E_j/S
+
+    logits <- log(theta_j/(1 - theta_j)) ## calculate Wald CI in logit space to allow normal approximation
+    if (!se) return(list(p=theta_j, logits=logits))
+
+    ## d is the q x (q-1 + q-2 + p) matrix of derivatives of theta_j w.r.t. each
+    ## parameter/coefficient, with the mu params first, then phi, and the
+    ## covariate terms after
+    ## starts with mu2, because mu1 = 0 is fixed, then for phi starts with phi2
+    ## because phi1 = 0 is fixed and leave out phiq, because phiq = 1 is fixed
+    ## E_j[1] is the entry corresponding to mu_1 and phi_1 but there are no
+    ## derivatives wrt mu1 or phi1 because they're fixed values
+    d <- matrix(0, m, r)
+    d[1, 1:(m-1)] <- -E_j[-1]/S2 # dtheta_1/dmu_k for k = 2,...,q
+    d[1, m:(2*m-3)] <- -eta0*E_j[-c(1,m)]/S2 # dtheta_1/dphi_k for k = 2,...,q-1
+    d[1, (2*m-2):r] <- -x0*sum(phiE_j)/S2 # dtheta_1/db_l for l indexing the covariate terms
+
+    for (j in 2:m) {
+        for (i in 2:m) {
+            ## derivatives with respect to mu_i, noting that in the derivatives
+            ## matrix there is no column for mu_1 so the derivatives w.r.t. mu_i
+            ## are in column (i-1)
+            if (i == j) {
+                d[j, (i-1)] <- (E_j[j]*S - E_j[j]^2)/S2
+            } else {
+                d[j, (i-1)] <- -E_j[i]*E_j[j]/S2
+            }
+        }
+        for (i in 2:(m-1)) {
+            ## derivatives with respect to phi_i, noting that in the derivatives
+            ## matrix there is no column for phi_1, so that the derivatives w.r.t.
+            ## phi_i are in column (m-1)+(i-1), and there's no column for phi_m
+            ## because it's a fixed value so has no derivatives w.r.t. it i.e.
+            ## no column in the matrix corresponding to phi_m
+            if (i == j) {
+                d[j, (m-1+i-1)] <- eta0*(E_j[j]*S - E_j[j]^2)/S2
+            } else {
+                d[j, (m-1+i-1)] <- -eta0*E_j[i]*E_j[j]/S2
+            }
+        }
+        for (i in 1:length(b)) {
+            ## derivatives with respect to the covariate coefficients
+            d[j, (2*m-3+i)] <- x0[i]*E_j[j]*(phi[j]*S - sum(phiE_j))
+        }
+    }
+
+    V.theta <- rep(0, m)
+    for (j in 1:m){
+        dd <- d[j,]
+        for (s in 1:r){
+            for (t in 1:r){
+                V.theta[j] <- V.theta[j] + V[s,t]*dd[s]*dd[t]
+            }
+        }
+    }
+    V.logits <- V.theta/(theta_j^2 * (1 - theta_j)^2)
+    list(p=theta_j, std.err.p=sqrt(V.theta), logits=logits,
+         std.error.logits=sqrt(V.logits))
+}
+
 # determine class of a predictor
 
 # is.factor.predictor <- function(predictor, model) {

@@ -42,6 +42,7 @@ S3method(Effect, mlm)
 S3method(Effect, svyglm)
 S3method(Effect, multinom)
 S3method(Effect, polr)
+S3method(Effect, osm)
 
 export(Effect,Effect.default,predictorEffect.default,predictorEffects.default)
 S3method(effSources,betareg)
